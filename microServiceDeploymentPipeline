@@ -1,4 +1,5 @@
-/* Pipeline to deploy an API Microservice in Azure Kubernetes service, along with docker container creation. */
+/* Pipeline to deploy an API Microservice in Azure Kubernetes service, along with docker container creation.
+Created docker image is being pushed to Azure Container Registry*/
 
 pipeline {
 
