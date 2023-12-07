@@ -1,0 +1,29 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api1-svc-npd01-deployment
+  namespace: Apiworkloads
+  labels:
+    app: api-svc-npd01
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api1-svc-npd01
+  template:
+    metadata:
+      labels:
+        app: api1-svc-npd01
+    spec:
+     containers:
+      - name: api1-svc-npd01
+        image: acr001.azurecr.io/api1-svc:1.0
+        imagePullPolicy: Always
+        resources:
+          requests:
+            memory: 100Mi
+          limits:
+            memory: 250Mi
+     nodeSelector:
+       agentpool: "agentpool3"

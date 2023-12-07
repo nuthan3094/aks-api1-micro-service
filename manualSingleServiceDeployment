@@ -1,0 +1,182 @@
+/* Pipeline to deploy an API Microservice in Azure Kubernetes service, along with docker container creation. */
+
+pipeline {
+
+	agent dotnet-build-6
+    
+    
+	environment {
+		version = ""
+		registry = "acr001.azurecr.io/"
+        framework = "dotnet-build-6"
+	}
+
+	parameters {
+                choice(choices: ['api1-svc'], description: 'API name', name: 'service')
+                choice(choices: ['npd01', 'npd02'], description: 'Environment', name: 'helmenv')
+				booleanParam(description: 'Deploy to East US?', name: 'EastUs', defaultValue: false)
+				booleanParam(description: 'Deploy to West US?', name: 'WestUs', defaultValue: false)
+    }
+
+	stages {
+        
+		stage('Define environment') {
+
+			agent
+			{
+				label "${framework}"
+			}
+	
+			// Stage to grab the latest commit githash of the current branch in the API service repo
+			stages{
+				stage ("Retrieve Branch config") {
+					steps{
+						dir('service') {
+							checkout([$class: 'GitSCM',
+								branches: [[name: "${branch}"]],
+								doGenerateSubmoduleConfigurations: false,
+								extensions: [],
+								submoduleCfg: [],
+								userRemoteConfigs: [[credentialsId: 'uname-pwd', url: "https://github.com/nuthan3094/${service}.git"]]])
+						}
+						script {
+							def csproj =  sh (
+								script: "find . -regextype egrep -regex '.*/[a-zA-Z-]*.[a-zA-Z-]*.Api/Cpg.*Api.csproj'",
+								returnStdout: true
+							).trim()
+							mygithash = sh (
+								script: "cd ${workspace}/service && git rev-parse HEAD",
+								returnStdout: true).trim()
+							version = sh (
+								script: "grep -oP '[0-9\\.]+(?=<\\/Version)' ${csproj}",
+								returnStdout: true
+							).trim()
+						}
+					}
+				}
+			// stage to connect to Nexus so that the framework can be used to build docker container 	
+				stage ("Nexus config") {
+					steps {
+						script{										
+								dir('service') {
+									checkout([$class: 'GitSCM',
+										branches: [[name: "${branch}"]],
+										doGenerateSubmoduleConfigurations: false,
+										extensions: [],
+										submoduleCfg: [],
+										userRemoteConfigs: [[credentialsId: 'uname-pwd', url: "https://github.com/nuthan3094/${service}.git"]]])
+								}
+								script{
+									sh "az login --service-principal --username $LOGIN_USR --password $LOGIN_PSW --tenant '75056d76-b628-4488-82b0-80b08b52d854'"
+									sh """
+										sed -i "s|placeholder|\$(az keyvault secret show --vault-name kv-npd-001 --name pwd --query value | xargs printf "%q" | tr -d \"'\")|" ./Config/npd/Nuget.config
+										cd service
+										dotnet restore --configfile ${workspace}/Config/npd/Nuget.config
+									"""
+
+							}
+						}		
+					}
+				}
+
+            // stage to build Docker container and push it to Azure Container Registry
+				stage('Build and Deploy') {
+					stages {
+						
+						stage('Build docker container') {
+
+							steps {
+								script{
+                            		echo "building docker container"
+
+											withCredentials([azureServicePrincipal('rtmJenkinsNPDDevops')]) {
+											sh "az login --service-principal -u $CLIENT_ID -p $CLIENT_SECRET -t $TENANT_ID"
+											sh "az account set --subscription \"retail-npd-001\""
+											}
+											script{
+												def isTagged = sh(script:"az acr repository show-tags -n acr001 --repository ${service} | grep ${version}", returnStatus: true)
+												 if(isTagged == 0){
+												 	sh "az acr repository delete -n acr001 --image ${service}:${version} --yes"
+												 }
+											}
+											sh """
+												cd service
+												dotnet publish --no-restore -c Release -o ${workspace}/service/app
+											"""
+
+											sh """
+											cd service
+											az acr build \
+											--registry acr001 \
+											--build-arg GITHASH=${mygithash} \
+											--resource-group rg-npd-001 \
+											--image ${service}:${version} .
+											"""
+							}		
+						}
+
+            // stage to call the method 'deployHelmChart' to deploy API manifests
+						stage('Deploy') {
+							steps {
+								script{
+									deployChart(helmenv)
+								}
+							}
+						}
+						
+
+					}
+				}
+			}
+		}
+	}
+}
+
+
+// Method to deploy helm charts to AKS
+def deployChart(env){
+	def serviceName = "api1-svc-" + "env" + "-deployment"
+    def nameSpace = "Apiworkloads"
+
+	sh """
+		az login --service-principal --username $LOGIN_USR --password $LOGIN_PSW --tenant 'xxxxx-xxxxxx-xxxxx-xxxxxx'
+		az account set --subscription \"sub-npd-001\"
+		az aks get-credentials --resource-group rg-npd-001 --name aks-npd-001 --admin
+	"""
+	if(params.EastUs) {
+        echo "Deploying to East Us..."
+        def isTagged = sh(script:"kubectl get deployments --namespace ${nameSpace} | grep ${serviceName}", returnStatus: true)
+		if(isTagged == 0){
+		sh "kubectl delete deployment ${serviceName} --namespace ${nameSpace}"
+		}
+		sh """
+			set +x
+			kubectl apply -f charts/deployment.yaml
+			kubectl apply -f charts/Service.yaml
+			kubectl apply -f charts/Ingress.yaml
+			echo "--------------------------------------------------------"
+		"""
+	} else {
+		echo "Deployment to East US was not enabled"
+	}
+
+
+	if(params.WestUs) {
+	    echo "Deploying to West US..."	
+    	sh "az aks get-credentials --resource-group rg-npd-001 --name aks-npd-001 --admin"
+    	def isTaggedCE = sh(script:"kubectl get deployments --namespace ${nameSpace} | grep ${serviceName}", returnStatus: true)
+		if(isTaggedCE == 0){
+
+		sh "kubectl delete deployment ${serviceName} --namespace ${nameSpace}"
+		}
+    	sh """
+			set +x
+			kubectl apply -f charts/deployment.yaml
+			kubectl apply -f charts/Service.yaml
+			kubectl apply -f charts/Ingress.yaml
+			echo "--------------------------------------------------------"
+		"""
+	} else {
+		echo "Deployment to West US was not enabled"
+	}
+}

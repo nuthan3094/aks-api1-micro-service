@@ -1,0 +1,23 @@
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: api1-svc-ingress
+  namespace: Apiworkloads
+  annotations:
+    kubernetes.io/ingress.class: nginx
+spec:
+  tls:
+  - hosts:
+    - api1-svc.aks.eastus.ca
+  rules:
+  - host: api1-svc.aks.eastus.ca
+    http:
+      paths:
+        - path: /
+          pathType: Prefix
+          backend:
+            service:
+              name: api1-svc-service
+              port:
+                number: 5000
